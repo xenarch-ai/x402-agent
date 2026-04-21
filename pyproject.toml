@@ -1,6 +1,6 @@
 [project]
 name = "x402-agent"
-version = "0.1.1"
+version = "0.1.2"
 description = "Framework-agnostic payer for the x402 HTTP payment protocol. Works with LangChain, CrewAI, AutoGen, LangGraph, or any other agent framework."
 readme = "README.md"
 requires-python = ">=3.12"

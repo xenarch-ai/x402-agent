@@ -1,8 +1,8 @@
 """Framework-agnostic x402 payer.
 
 ``X402Payer`` performs the full "GET → 402 → budget check → sign → retry →
-return body" loop against any spec-compliant x402 v2 resource server. No
-framework deps, no Xenarch branding, no facilitator coupling.
+return body" loop against any spec-compliant x402 resource server (V1 or
+V2). No framework deps, no Xenarch branding, no facilitator coupling.
 
 Framework adapters (LangChain, CrewAI, AutoGen, LangGraph) wrap this with
 their tool-function contract. Xenarch's commercial layer subclasses it and
@@ -28,16 +28,14 @@ from pydantic import ValidationError
 from x402.client import x402Client, x402ClientSync
 from x402.mechanisms.evm.exact import register_exact_evm_client
 from x402.mechanisms.evm.signers import EthAccountSigner
-from x402.schemas import (
-    PaymentRequired,
-    PaymentRequirements,
-    parse_payment_required,
-)
+from x402.schemas import parse_payment_required
 
 from x402_agent._budget import BudgetPolicy
 from x402_agent._helpers import (
     X_PAYMENT_HEADER,
     X_PAYMENT_RESPONSE_HEADER,
+    AnyPaymentRequired,
+    AnyPaymentRequirements,
     budget_hint_exceeds,
     encode_payment_header,
     is_public_host,
@@ -103,7 +101,7 @@ class X402Payer:
         self,
         *,
         url: str,
-        accept: PaymentRequirements,
+        accept: AnyPaymentRequirements,
         price: Decimal,
     ) -> dict[str, Any] | None:
         """Run before the budget lock. Return an error dict to abort."""
@@ -113,7 +111,7 @@ class X402Payer:
         self,
         *,
         url: str,
-        accept: PaymentRequirements,
+        accept: AnyPaymentRequirements,
         price: Decimal,
     ) -> dict[str, Any] | None:
         return None
@@ -137,23 +135,24 @@ class X402Payer:
     # Internal helpers.
     # ------------------------------------------------------------------
 
-    def _parse_402(self, response: httpx.Response) -> PaymentRequired | None:
-        """Return the parsed PaymentRequired (V2) or None if V1/invalid."""
+    def _parse_402(self, response: httpx.Response) -> AnyPaymentRequired | None:
+        """Return the parsed PaymentRequired (V1 or V2), or None if invalid.
+
+        The SDK's ``parse_payment_required`` auto-detects the schema
+        version from the ``x402Version`` field and returns the matching
+        pydantic model. Both V1 and V2 are settled through the same
+        client, so we accept either.
+        """
         try:
-            parsed = parse_payment_required(response.content)
+            return parse_payment_required(response.content)
         except (ValueError, TypeError, ValidationError, json.JSONDecodeError):
             return None
-        # V1 still widely deployed but needs different scheme selection;
-        # defer to a later release.
-        if not isinstance(parsed, PaymentRequired):
-            return None
-        return parsed
 
     def _budget_gate(
         self,
         *,
         url: str,
-        accept: PaymentRequirements,
+        accept: AnyPaymentRequirements,
         price: Decimal,
     ) -> dict[str, Any] | None:
         """Run the budget check + optional approval. Caller holds the lock."""
@@ -176,7 +175,7 @@ class X402Payer:
         *,
         url: str,
         response: httpx.Response,
-        accept: PaymentRequirements,
+        accept: AnyPaymentRequirements,
         price: Decimal,
     ) -> dict[str, Any]:
         body = truncate_body(response.text, self.max_response_bytes)
@@ -195,13 +194,21 @@ class X402Payer:
         }
 
     def _pay_json_pre_check(self, url: str) -> dict[str, Any] | None:
-        """Fetch pay.json for the URL's host; return error dict or None."""
+        """Fetch pay.json for the URL's host; return error dict or None.
+
+        The ``pay.json`` discovery step is advisory — it lets a publisher
+        short-circuit a doomed fetch before the agent spends bandwidth on
+        a 402 it can't afford. It is *never* authoritative; the 402 is.
+        That means if the ``pay-json`` extra isn't installed we silently
+        skip discovery instead of failing the payment.
+        """
         if not self.discover_via_pay_json:
             return None
 
-        # Local import: callers without the pay.json extra still load this
-        # module without a hard import error.
-        from pay_json import PayJson, PayJsonInvalid, PayJsonNotFound
+        try:
+            from pay_json import PayJson, PayJsonInvalid, PayJsonNotFound
+        except ImportError:
+            return None
 
         host, path = split_host_path(url)
         if not host:

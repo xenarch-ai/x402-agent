@@ -16,63 +16,108 @@ from typing import Any
 from urllib.parse import urlparse
 
 from x402.mechanisms.evm.constants import DEFAULT_DECIMALS
-from x402.schemas import PaymentRequired, PaymentRequirements
+from x402.mechanisms.evm.v1.constants import V1_NETWORKS
+from x402.schemas import (
+    PaymentRequired,
+    PaymentRequiredV1,
+    PaymentRequirements,
+    PaymentRequirementsV1,
+)
 
 
-# The x402 server advertises ``amount`` as an integer string in the asset's
-# smallest unit; for USDC that is 6 decimals. The authoritative value can
-# live in ``requirements.extra["decimals"]`` — we honour that when present
-# and fall back to the EVM-default (6) otherwise.
+# The x402 server advertises the atomic amount as an integer string in the
+# asset's smallest unit; for USDC that is 6 decimals. The authoritative
+# value can live in ``requirements.extra["decimals"]`` — we honour that
+# when present and fall back to the EVM-default (6) otherwise. V1 names
+# the field ``max_amount_required``; V2 renamed it to ``amount``.
 X_PAYMENT_HEADER = "X-PAYMENT"
 X_PAYMENT_RESPONSE_HEADER = "X-PAYMENT-RESPONSE"
 
 # Default preferred network — CAIP-2 chain ID for Base (8453). The x402 v2
-# spec identifies networks with CAIP-2 identifiers and the SDK registers an
-# ``eip155:*`` wildcard, so any EVM chain with that prefix is payable. We
-# prefer Base explicitly but fall back to any CAIP-2 eip155 entry so a
-# resource server advertising ``eip155:1`` (Ethereum) still works out of
-# the box. Non-CAIP-2 legacy strings like ``"base"`` are V1 and not handled.
+# spec identifies networks with CAIP-2 identifiers and the SDK registers
+# an ``eip155:*`` wildcard, so any EVM chain with that prefix is payable.
+# V1 uses legacy name strings; ``"base"`` is the Base-mainnet legacy name
+# and the V1 preferred fallback.
 DEFAULT_NETWORK = "eip155:8453"
+DEFAULT_NETWORK_V1 = "base"
 DEFAULT_SCHEME = "exact"
 EIP155_PREFIX = "eip155:"
+V1_NETWORKS_SET = frozenset(V1_NETWORKS)
+
+AnyPaymentRequired = PaymentRequired | PaymentRequiredV1
+AnyPaymentRequirements = PaymentRequirements | PaymentRequirementsV1
 
 
-def price_usd(req: PaymentRequirements) -> Decimal:
-    """Convert atomic on-chain amount to Decimal USD using asset decimals."""
+def _atomic_amount(req: AnyPaymentRequirements) -> Decimal:
+    """Return the atomic on-chain amount from either a V2 or V1 entry."""
+    if isinstance(req, PaymentRequirementsV1):
+        return Decimal(req.max_amount_required)
+    return Decimal(req.amount)
+
+
+def price_usd(req: AnyPaymentRequirements) -> Decimal:
+    """Convert atomic on-chain amount to Decimal USD using asset decimals.
+
+    Accepts both V1 (``max_amount_required``) and V2 (``amount``) shapes.
+    """
     decimals = DEFAULT_DECIMALS
     extra = req.extra or {}
     extra_decimals = extra.get("decimals")
     if isinstance(extra_decimals, int) and extra_decimals >= 0:
         decimals = extra_decimals
-    amount = Decimal(req.amount)
+    amount = _atomic_amount(req)
     scale = Decimal(10) ** decimals
     return amount / scale
 
 
 def select_accept(
-    payment_required: PaymentRequired,
+    payment_required: AnyPaymentRequired,
     *,
     preferred_scheme: str = DEFAULT_SCHEME,
     preferred_network: str = DEFAULT_NETWORK,
-) -> PaymentRequirements | None:
+    preferred_network_v1: str = DEFAULT_NETWORK_V1,
+) -> AnyPaymentRequirements | None:
     """Pick the first accept entry that matches our registered scheme/network.
 
+    Handles both V1 and V2 payment-required responses. The SDK's EVM client
+    registers schemes on the V2 ``eip155:*`` wildcard and on every legacy
+    V1 network name, so any of these can settle.
+
     Preference order:
-      1. Exact match on (scheme, network) — e.g. (exact, eip155:8453).
-      2. Same scheme on any CAIP-2 ``eip155:`` chain — the SDK's V2 EVM
-         client is registered under ``eip155:*`` so any EVM network works.
-      3. Give up. V1 legacy networks (e.g. plain ``"base"``) are rejected;
-         the caller gets a ``no_supported_scheme`` error upstream.
+      1. V2 exact match on (scheme, preferred_network).
+      2. V2 same scheme on any CAIP-2 ``eip155:`` chain.
+      3. V1 exact match on (scheme, preferred_network_v1), e.g. ``"base"``.
+      4. V1 same scheme on any registered legacy EVM network.
+      5. Give up.
     """
-    for entry in payment_required.accepts:
-        if entry.scheme == preferred_scheme and entry.network == preferred_network:
-            return entry
-    for entry in payment_required.accepts:
-        if (
-            entry.scheme == preferred_scheme
-            and entry.network.startswith(EIP155_PREFIX)
-        ):
-            return entry
+    accepts = payment_required.accepts
+    # V2 preferences first — modern servers emit V2.
+    for entry in accepts:
+        if isinstance(entry, PaymentRequirements):
+            if entry.scheme == preferred_scheme and entry.network == preferred_network:
+                return entry
+    for entry in accepts:
+        if isinstance(entry, PaymentRequirements):
+            if (
+                entry.scheme == preferred_scheme
+                and entry.network.startswith(EIP155_PREFIX)
+            ):
+                return entry
+    # V1 fallbacks — many production gates still emit V1.
+    for entry in accepts:
+        if isinstance(entry, PaymentRequirementsV1):
+            if (
+                entry.scheme == preferred_scheme
+                and entry.network == preferred_network_v1
+            ):
+                return entry
+    for entry in accepts:
+        if isinstance(entry, PaymentRequirementsV1):
+            if (
+                entry.scheme == preferred_scheme
+                and entry.network in V1_NETWORKS_SET
+            ):
+                return entry
     return None
 
 

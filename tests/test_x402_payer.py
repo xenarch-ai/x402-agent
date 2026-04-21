@@ -41,6 +41,30 @@ def _make_402_body(amount: str = "10000") -> dict[str, Any]:
     }
 
 
+def _make_402_body_v1(amount: str = "10000") -> dict[str, Any]:
+    # Wire format emitted by a V1 gate: flat ``resource``, camel-case
+    # ``maxAmountRequired``, legacy network name ``"base"``. This matches
+    # what gate.xenarch.dev and other production WP gates return today.
+    return {
+        "x402Version": 1,
+        "error": "payment_required",
+        "accepts": [
+            {
+                "scheme": "exact",
+                "network": "base",
+                "maxAmountRequired": amount,
+                "resource": "https://example.com/article/1",
+                "description": "Paid content",
+                "mimeType": "text/html",
+                "payTo": "0x0000000000000000000000000000000000000001",
+                "maxTimeoutSeconds": 60,
+                "asset": USDC,
+                "extra": {"name": "USD Coin", "version": "2"},
+            }
+        ],
+    }
+
+
 def _settle_header(tx: str = "0xfeedface") -> str:
     return base64.b64encode(
         json.dumps(
@@ -122,6 +146,40 @@ class TestSyncHappyPath:
         # Session budget must advance by exactly the paid amount.
         assert result["session_spent_usd"] == "0.01"
 
+    def test_v1_402_challenge_then_paid_get(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Production WP gates (and any pre-V2 spec-compliant server) emit
+        # ``x402Version: 1`` with ``maxAmountRequired`` and legacy network
+        # names. The SDK's EVM client registers V1 for all legacy chains,
+        # so this must settle end-to-end.
+        def handler(req: httpx.Request) -> httpx.Response:
+            if "x-payment" not in {k.lower() for k in req.headers}:
+                return httpx.Response(402, json=_make_402_body_v1())
+            return httpx.Response(
+                200,
+                text="v1 paid body",
+                headers={
+                    "X-PAYMENT-RESPONSE": base64.b64encode(
+                        json.dumps(
+                            {
+                                "success": True,
+                                "transaction": "0xcafebabe",
+                                "network": "base",
+                            }
+                        ).encode()
+                    ).decode()
+                },
+            )
+
+        _install_sync_transport(monkeypatch, handler)
+
+        result = _payer().pay("https://example.com/v1-article")
+        assert result["success"] is True, result
+        assert result["body"] == "v1 paid body"
+        assert result["amount_usd"] == "0.01"
+        assert result["network"] == "base"
+
     def test_non_402_response_passes_through(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -152,18 +210,18 @@ class TestSyncErrorShapes:
     def test_no_supported_scheme(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Legacy V1 string "base" is not CAIP-2; select_accept returns
-        # None and the payer reports no_supported_scheme instead of
-        # silently signing on the wrong network.
-        body = _make_402_body()
-        body["accepts"][0]["network"] = "base"
+        # V1 advertising a legacy network the SDK hasn't registered
+        # (e.g. "solana"). select_accept returns None and the payer
+        # reports no_supported_scheme instead of signing the wrong chain.
+        body = _make_402_body_v1()
+        body["accepts"][0]["network"] = "solana"
 
         def handler(req: httpx.Request) -> httpx.Response:
             return httpx.Response(402, json=body)
 
         _install_sync_transport(monkeypatch, handler)
 
-        result = _payer().pay("https://example.com/v1-only")
+        result = _payer().pay("https://example.com/unsupported")
         assert result["error"] == "no_supported_scheme"
 
     def test_budget_gate_blocks_expensive_call(
@@ -255,6 +313,58 @@ class TestSubclassHooks:
         result = p.pay("https://example.com/x")
         assert result["success"] is True
         assert result["marker"] == "post-ran"
+
+
+class TestPayJsonSoftImport:
+    """pay.json discovery must be optional — no crash without the extra.
+
+    The ``pay-json`` extra is genuinely optional. A user can ``pip install
+    x402-agent`` with no extras, pass ``discover_via_pay_json=True`` (the
+    default), and the payer must still work: skip discovery, go straight
+    to the 402, settle normally. A prior version hard-imported ``pay_json``
+    at function scope and crashed every call with ``unexpected_error``
+    when the extra wasn't installed. This regression test pins that fix.
+    """
+
+    def test_missing_pay_json_module_does_not_crash(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _blocking_import(
+            name: str, globals: Any = None, locals: Any = None,
+            fromlist: Any = (), level: int = 0,
+        ) -> Any:
+            if name == "pay_json" or name.startswith("pay_json."):
+                raise ImportError(
+                    "No module named 'pay_json' (simulated by test)"
+                )
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", _blocking_import)
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if "x-payment" not in {k.lower() for k in req.headers}:
+                return httpx.Response(402, json=_make_402_body())
+            return httpx.Response(
+                200,
+                text="paid",
+                headers={"X-PAYMENT-RESPONSE": _settle_header()},
+            )
+
+        _install_sync_transport(monkeypatch, handler)
+
+        # discover_via_pay_json=True is the default; set it explicitly to
+        # document that this code path is the one we're guarding.
+        p = X402Payer(
+            private_key=Account.create().key.hex(),
+            budget_policy=BudgetPolicy(),
+            discover_via_pay_json=True,
+        )
+        result = p.pay("https://example.com/x")
+        assert result["success"] is True, result
 
 
 class TestAsyncHappyPath:
