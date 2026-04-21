@@ -9,10 +9,6 @@ Layer 1 of the three-layer agent-payments architecture:
 
 This package has zero framework dependencies. Framework adapters wrap it;
 they never leak framework types into this namespace.
-
-Subpackaged inside ``xenarch-sdks`` for convenience during Phase 0 of the
-rollout plan (see ``Information/design/x402-agent-upstream-plan.md``).
-Phase 1 promotes this subpackage to its own public repo + PyPI release.
 """
 
 from x402_agent._budget import BudgetPolicy
