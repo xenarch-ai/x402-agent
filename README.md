@@ -1,6 +1,8 @@
 # x402-agent
 
-Framework-agnostic payer for the [x402 HTTP payment protocol](https://github.com/coinbase/x402).
+Framework-agnostic payer for the [x402 HTTP payment protocol](https://github.com/x402-foundation/x402).
+
+> **Not affiliated with the x402 Foundation or Coinbase.** This is a third-party implementation of the open x402 HTTP payment protocol, maintained by [Xenarch](https://xenarch.dev).
 
 Zero framework dependencies. Subclass or compose from **LangChain**, **CrewAI**, **AutoGen**, **LangGraph**, or anything else that wants to let an agent spend USDC against a `402 Payment Required` response without rolling its own pay loop.
 
