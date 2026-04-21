@@ -12,7 +12,12 @@ from typing import Any
 
 import pytest
 
-from x402.schemas import PaymentRequired, PaymentRequirements
+from x402.schemas import (
+    PaymentRequired,
+    PaymentRequiredV1,
+    PaymentRequirements,
+    PaymentRequirementsV1,
+)
 
 from x402_agent import (
     BudgetPolicy,
@@ -46,6 +51,27 @@ def _req(
     )
 
 
+def _req_v1(
+    *,
+    scheme: str = "exact",
+    network: str = "base",
+    max_amount_required: str = "10000",
+    extra: dict[str, Any] | None = None,
+) -> PaymentRequirementsV1:
+    return PaymentRequirementsV1(
+        scheme=scheme,
+        network=network,
+        maxAmountRequired=max_amount_required,
+        resource="https://example.com/paid",
+        description="",
+        mimeType="text/html",
+        payTo="0x0000000000000000000000000000000000000001",
+        maxTimeoutSeconds=60,
+        asset=USDC,
+        extra=extra or {"name": "USD Coin", "version": "2"},
+    )
+
+
 class TestPriceUsd:
     def test_default_usdc_decimals(self) -> None:
         # 10000 in 6-decimal USDC is $0.01.
@@ -61,6 +87,11 @@ class TestPriceUsd:
         # Garbage in `extra.decimals` must not crash — fall back to 6.
         r = _req(amount="10000", extra={"decimals": "six"})
         assert price_usd(r) == Decimal("0.01")
+
+    def test_v1_max_amount_required(self) -> None:
+        # V1 names the field ``max_amount_required``. Helper must read
+        # from either shape so V1 gates (still widely deployed) settle.
+        assert price_usd(_req_v1(max_amount_required="10000")) == Decimal("0.01")
 
 
 class TestSelectAccept:
@@ -87,15 +118,53 @@ class TestSelectAccept:
         assert chosen is not None
         assert chosen.network == "eip155:1"
 
-    def test_rejects_legacy_non_caip2_network(self) -> None:
-        # V1 legacy string "base" isn't CAIP-2 and isn't registered on
-        # the SDK's EVM client. Must return None so callers surface
-        # ``no_supported_scheme`` rather than silently signing with the
-        # wrong chain ID.
+    def test_prefers_v2_over_v1_when_both_offered(self) -> None:
+        # A dual-emitting server that advertises both a V1 entry and a
+        # V2 entry should settle on V2. The pydantic models for the two
+        # versions aren't actually mixed in a single PaymentRequired —
+        # that's what "dual-emitting" means at the HTTP layer — but our
+        # select function takes a union and this documents the rule.
         pr = PaymentRequired(
             x402Version=2,
             error="payment_required",
-            accepts=[_req(network="base")],
+            accepts=[_req(network=DEFAULT_NETWORK)],
+        )
+        chosen = select_accept(pr)
+        assert chosen is not None
+        assert isinstance(chosen, PaymentRequirements)
+
+    def test_accepts_v1_base(self) -> None:
+        # V1 servers — still widely deployed, including production WP
+        # gates — advertise legacy names like "base". The SDK's EVM
+        # client registers V1 for all legacy networks, so we settle them.
+        pr = PaymentRequiredV1(
+            x402Version=1,
+            error="payment_required",
+            accepts=[_req_v1(network="base")],
+        )
+        chosen = select_accept(pr)
+        assert chosen is not None
+        assert isinstance(chosen, PaymentRequirementsV1)
+        assert chosen.network == "base"
+
+    def test_accepts_v1_non_base_legacy_network(self) -> None:
+        pr = PaymentRequiredV1(
+            x402Version=1,
+            error="payment_required",
+            accepts=[_req_v1(network="polygon")],
+        )
+        chosen = select_accept(pr)
+        assert chosen is not None
+        assert chosen.network == "polygon"
+
+    def test_rejects_unknown_legacy_network(self) -> None:
+        # A made-up V1 network the SDK hasn't registered must return
+        # None so callers surface ``no_supported_scheme`` rather than
+        # signing with the wrong chain.
+        pr = PaymentRequiredV1(
+            x402Version=1,
+            error="payment_required",
+            accepts=[_req_v1(network="solana")],
         )
         assert select_accept(pr) is None
 
