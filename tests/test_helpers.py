@@ -22,8 +22,13 @@ from x402.schemas import (
 from x402_agent import (
     BudgetPolicy,
     DEFAULT_NETWORK,
+    PAYMENT_RESPONSE_HEADER,
+    PAYMENT_SIGNATURE_HEADER,
+    X_PAYMENT_HEADER,
+    X_PAYMENT_RESPONSE_HEADER,
     budget_hint_exceeds,
     is_public_host,
+    payment_headers,
     price_usd,
     select_accept,
 )
@@ -217,6 +222,33 @@ class TestIsPublicHost:
             is_public_host("this-host-definitely-does-not-exist.invalid")
             is False
         )
+
+
+class TestPaymentHeaders:
+    def test_v2_uses_unprefixed_headers(self) -> None:
+        # PayAI and other V2 facilitators ignore retries that arrive on
+        # the V1 ``X-PAYMENT`` header — they expect ``PAYMENT-SIGNATURE``
+        # per RFC 6648. This is the regression that motivated the fix.
+        pr = PaymentRequired(
+            x402Version=2,
+            error="payment_required",
+            accepts=[_req(network=DEFAULT_NETWORK)],
+        )
+        request_header, response_header = payment_headers(pr)
+        assert request_header == PAYMENT_SIGNATURE_HEADER
+        assert response_header == PAYMENT_RESPONSE_HEADER
+
+    def test_v1_uses_x_prefixed_headers(self) -> None:
+        # Production WP gates still emit V1; they require the legacy
+        # ``X-PAYMENT`` retry header and answer on ``X-PAYMENT-RESPONSE``.
+        pr = PaymentRequiredV1(
+            x402Version=1,
+            error="payment_required",
+            accepts=[_req_v1(network="base")],
+        )
+        request_header, response_header = payment_headers(pr)
+        assert request_header == X_PAYMENT_HEADER
+        assert response_header == X_PAYMENT_RESPONSE_HEADER
 
 
 class TestBudgetHintExceeds:

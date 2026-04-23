@@ -24,7 +24,7 @@ result = payer.pay("https://example.com/gated/article")
 # {"success": True, "body": "...", "amount_usd": "0.01", ...}
 ```
 
-`pay(url)` walks the full challenge: GET → parse `402` → pick a supported (scheme, network) → enforce your budget → sign an EIP-3009 USDC authorisation → retry with `X-PAYMENT` → return the unlocked body. Never raises; every failure mode is a dict you can show an LLM.
+`pay(url)` walks the full challenge: GET → parse `402` → pick a supported (scheme, network) → enforce your budget → sign an EIP-3009 USDC authorisation → retry with the version-correct payment header (`PAYMENT-SIGNATURE` for V2, `X-PAYMENT` for V1 legacy gates) → return the unlocked body. Never raises; every failure mode is a dict you can show an LLM.
 
 Async via `await payer.pay_async(url)`.
 
@@ -38,8 +38,9 @@ Async via `await payer.pay_async(url)`.
 | `price_usd` | Atomic-units → `Decimal` USD using the advertised asset decimals |
 | `is_public_host` / `is_public_host_async` | SSRF guard for agent-provided URLs |
 | `budget_hint_exceeds` | Early-refusal check against `pay.json` `budget_hints` |
+| `payment_headers` | Return the `(request, response)` header pair for V1 vs V2 wire |
 
-Constants (`DEFAULT_NETWORK`, `DEFAULT_SCHEME`, `X_PAYMENT_HEADER`, `X_PAYMENT_RESPONSE_HEADER`) are exported so adapters don't have to hard-code them.
+Constants (`DEFAULT_NETWORK`, `DEFAULT_SCHEME`, `X_PAYMENT_HEADER`, `X_PAYMENT_RESPONSE_HEADER`, `PAYMENT_SIGNATURE_HEADER`, `PAYMENT_RESPONSE_HEADER`) are exported so adapters don't have to hard-code them.
 
 ## Subclassing
 
