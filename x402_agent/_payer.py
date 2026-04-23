@@ -32,14 +32,13 @@ from x402.schemas import parse_payment_required
 
 from x402_agent._budget import BudgetPolicy
 from x402_agent._helpers import (
-    X_PAYMENT_HEADER,
-    X_PAYMENT_RESPONSE_HEADER,
     AnyPaymentRequired,
     AnyPaymentRequirements,
     budget_hint_exceeds,
     encode_payment_header,
     is_public_host,
     is_public_host_async,
+    payment_headers,
     price_usd,
     select_accept,
     split_host_path,
@@ -177,6 +176,7 @@ class X402Payer:
         response: httpx.Response,
         accept: AnyPaymentRequirements,
         price: Decimal,
+        response_header: str,
     ) -> dict[str, Any]:
         body = truncate_body(response.text, self.max_response_bytes)
         return {
@@ -186,9 +186,7 @@ class X402Payer:
             "pay_to": accept.pay_to,
             "asset": accept.asset,
             "network": accept.network,
-            "payment_response": response.headers.get(
-                X_PAYMENT_RESPONSE_HEADER
-            ),
+            "payment_response": response.headers.get(response_header),
             "body": body,
             "session_spent_usd": str(self.budget_policy.session_spent),
         }
@@ -282,6 +280,9 @@ class X402Payer:
                     }
 
                 price = price_usd(accept)
+                request_header, response_header = payment_headers(
+                    payment_required
+                )
 
                 # Pre-payment hook runs before the budget lock: a failing
                 # subclass check (e.g. reputation lookup) must not block
@@ -306,7 +307,7 @@ class X402Payer:
                     header_value = encode_payment_header(payload)
 
                     paid = client.get(
-                        url, headers={X_PAYMENT_HEADER: header_value}
+                        url, headers={request_header: header_value}
                     )
 
                     if paid.status_code != 200:
@@ -322,7 +323,11 @@ class X402Payer:
                     self.budget_policy.commit(price)
 
                     result = self._success_response(
-                        url=url, response=paid, accept=accept, price=price
+                        url=url,
+                        response=paid,
+                        accept=accept,
+                        price=price,
+                        response_header=response_header,
                     )
                     self._post_payment_hook(result, paid)
                     return result
@@ -376,6 +381,9 @@ class X402Payer:
                     }
 
                 price = price_usd(accept)
+                request_header, response_header = payment_headers(
+                    payment_required
+                )
 
                 pre_hook = await self._pre_payment_hook_async(
                     url=url, accept=accept, price=price
@@ -396,7 +404,7 @@ class X402Payer:
                     header_value = encode_payment_header(payload)
 
                     paid = await client.get(
-                        url, headers={X_PAYMENT_HEADER: header_value}
+                        url, headers={request_header: header_value}
                     )
 
                     if paid.status_code != 200:
@@ -410,7 +418,11 @@ class X402Payer:
                     self.budget_policy.commit(price)
 
                     result = self._success_response(
-                        url=url, response=paid, accept=accept, price=price
+                        url=url,
+                        response=paid,
+                        accept=accept,
+                        price=price,
+                        response_header=response_header,
                     )
                     await self._post_payment_hook_async(result, paid)
                     return result

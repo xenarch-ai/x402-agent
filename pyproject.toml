@@ -1,6 +1,6 @@
 [project]
 name = "x402-agent"
-version = "0.1.2"
+version = "0.2.0"
 description = "Framework-agnostic payer for the x402 HTTP payment protocol. Works with LangChain, CrewAI, AutoGen, LangGraph, or any other agent framework."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-pay-json = ["pay.json>=1.1,<2"]
+pay-json = ["pay.json>=1.2,<2"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

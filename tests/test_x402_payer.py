@@ -129,12 +129,14 @@ class TestSyncHappyPath:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         def handler(req: httpx.Request) -> httpx.Response:
-            if "x-payment" not in {k.lower() for k in req.headers}:
+            # V2 retry header is ``PAYMENT-SIGNATURE``; V1 ``X-PAYMENT``
+            # would never arrive here because the body advertises V2.
+            if "payment-signature" not in {k.lower() for k in req.headers}:
                 return httpx.Response(402, json=_make_402_body())
             return httpx.Response(
                 200,
                 text="paid body",
-                headers={"X-PAYMENT-RESPONSE": _settle_header()},
+                headers={"PAYMENT-RESPONSE": _settle_header()},
             )
 
         _install_sync_transport(monkeypatch, handler)
@@ -145,6 +147,38 @@ class TestSyncHappyPath:
         assert result["amount_usd"] == "0.01"
         # Session budget must advance by exactly the paid amount.
         assert result["session_spent_usd"] == "0.01"
+        # Settlement header surfaces in result regardless of wire version.
+        assert result["payment_response"] is not None
+
+    def test_v2_retry_uses_payment_signature_not_x_payment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Pin the regression: a V2 facilitator that sees ``X-PAYMENT``
+        # treats it as a missing signature and re-issues 402. This test
+        # fails on x402-agent <=0.1.2 which hardcoded ``X-PAYMENT``.
+        retry_headers: list[set[str]] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            lowered = {k.lower() for k in req.headers}
+            if "payment-signature" in lowered:
+                retry_headers.append(lowered)
+                return httpx.Response(
+                    200,
+                    text="ok",
+                    headers={"PAYMENT-RESPONSE": _settle_header()},
+                )
+            if "x-payment" in lowered:
+                # Wrong header — fail loudly so the test catches it.
+                return httpx.Response(402, json=_make_402_body())
+            return httpx.Response(402, json=_make_402_body())
+
+        _install_sync_transport(monkeypatch, handler)
+
+        result = _payer().pay("https://example.com/v2-article")
+        assert result["success"] is True, result
+        assert len(retry_headers) == 1
+        assert "payment-signature" in retry_headers[0]
+        assert "x-payment" not in retry_headers[0]
 
     def test_v1_402_challenge_then_paid_get(
         self, monkeypatch: pytest.MonkeyPatch
@@ -267,7 +301,7 @@ class TestSubclassHooks:
                 return {"error": "blocked_by_pre_hook"}
 
         def handler(req: httpx.Request) -> httpx.Response:
-            if "x-payment" not in {k.lower() for k in req.headers}:
+            if "payment-signature" not in {k.lower() for k in req.headers}:
                 return httpx.Response(402, json=_make_402_body())
             calls.append("paid-get")
             return httpx.Response(200, text="nope")
@@ -295,12 +329,12 @@ class TestSubclassHooks:
                 result["marker"] = "post-ran"
 
         def handler(req: httpx.Request) -> httpx.Response:
-            if "x-payment" not in {k.lower() for k in req.headers}:
+            if "payment-signature" not in {k.lower() for k in req.headers}:
                 return httpx.Response(402, json=_make_402_body())
             return httpx.Response(
                 200,
                 text="paid",
-                headers={"X-PAYMENT-RESPONSE": _settle_header()},
+                headers={"PAYMENT-RESPONSE": _settle_header()},
             )
 
         _install_sync_transport(monkeypatch, handler)
@@ -346,12 +380,12 @@ class TestPayJsonSoftImport:
         monkeypatch.setattr(builtins, "__import__", _blocking_import)
 
         def handler(req: httpx.Request) -> httpx.Response:
-            if "x-payment" not in {k.lower() for k in req.headers}:
+            if "payment-signature" not in {k.lower() for k in req.headers}:
                 return httpx.Response(402, json=_make_402_body())
             return httpx.Response(
                 200,
                 text="paid",
-                headers={"X-PAYMENT-RESPONSE": _settle_header()},
+                headers={"PAYMENT-RESPONSE": _settle_header()},
             )
 
         _install_sync_transport(monkeypatch, handler)
@@ -372,12 +406,12 @@ class TestAsyncHappyPath:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         def handler(req: httpx.Request) -> httpx.Response:
-            if "x-payment" not in {k.lower() for k in req.headers}:
+            if "payment-signature" not in {k.lower() for k in req.headers}:
                 return httpx.Response(402, json=_make_402_body())
             return httpx.Response(
                 200,
                 text="async paid",
-                headers={"X-PAYMENT-RESPONSE": _settle_header()},
+                headers={"PAYMENT-RESPONSE": _settle_header()},
             )
 
         _install_async_transport(monkeypatch, handler)
@@ -385,3 +419,26 @@ class TestAsyncHappyPath:
         result = await _payer().pay_async("https://example.com/async")
         assert result["success"] is True
         assert result["body"] == "async paid"
+
+    async def test_async_v2_retry_uses_payment_signature(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        retry_headers: list[set[str]] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            lowered = {k.lower() for k in req.headers}
+            if "payment-signature" in lowered:
+                retry_headers.append(lowered)
+                return httpx.Response(
+                    200,
+                    text="ok",
+                    headers={"PAYMENT-RESPONSE": _settle_header()},
+                )
+            return httpx.Response(402, json=_make_402_body())
+
+        _install_async_transport(monkeypatch, handler)
+
+        result = await _payer().pay_async("https://example.com/async-v2")
+        assert result["success"] is True, result
+        assert len(retry_headers) == 1
+        assert "x-payment" not in retry_headers[0]

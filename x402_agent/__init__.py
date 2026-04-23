@@ -15,29 +15,35 @@ from x402_agent._budget import BudgetPolicy
 from x402_agent._helpers import (
     DEFAULT_NETWORK,
     DEFAULT_SCHEME,
+    PAYMENT_RESPONSE_HEADER,
+    PAYMENT_SIGNATURE_HEADER,
     X_PAYMENT_HEADER,
     X_PAYMENT_RESPONSE_HEADER,
     budget_hint_exceeds,
     is_public_host,
     is_public_host_async,
+    payment_headers,
     price_usd,
     select_accept,
 )
 from x402_agent._payer import X402Payer
 
-# v0.1.0 stable surface. Adapter authors should import only from here.
+# v0.2.0 stable surface. Adapter authors should import only from here.
 # Everything in ``x402_agent._helpers`` and ``x402_agent._payer`` is
 # accessible but not a stability promise — we may rename it.
 __all__ = [
     "BudgetPolicy",
     "DEFAULT_NETWORK",
     "DEFAULT_SCHEME",
+    "PAYMENT_RESPONSE_HEADER",
+    "PAYMENT_SIGNATURE_HEADER",
     "X402Payer",
     "X_PAYMENT_HEADER",
     "X_PAYMENT_RESPONSE_HEADER",
     "budget_hint_exceeds",
     "is_public_host",
     "is_public_host_async",
+    "payment_headers",
     "price_usd",
     "select_accept",
 ]

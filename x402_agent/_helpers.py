@@ -15,6 +15,12 @@ from decimal import Decimal
 from typing import Any
 from urllib.parse import urlparse
 
+from x402.http.constants import (
+    PAYMENT_RESPONSE_HEADER as PAYMENT_RESPONSE_HEADER,
+    PAYMENT_SIGNATURE_HEADER as PAYMENT_SIGNATURE_HEADER,
+    X_PAYMENT_HEADER as X_PAYMENT_HEADER,
+    X_PAYMENT_RESPONSE_HEADER as X_PAYMENT_RESPONSE_HEADER,
+)
 from x402.mechanisms.evm.constants import DEFAULT_DECIMALS
 from x402.mechanisms.evm.v1.constants import V1_NETWORKS
 from x402.schemas import (
@@ -30,8 +36,11 @@ from x402.schemas import (
 # value can live in ``requirements.extra["decimals"]`` — we honour that
 # when present and fall back to the EVM-default (6) otherwise. V1 names
 # the field ``max_amount_required``; V2 renamed it to ``amount``.
-X_PAYMENT_HEADER = "X-PAYMENT"
-X_PAYMENT_RESPONSE_HEADER = "X-PAYMENT-RESPONSE"
+#
+# Header constants are re-exported from the upstream SDK so a single
+# rename in ``x402.http.constants`` propagates here. V1 wire uses
+# ``X-PAYMENT`` / ``X-PAYMENT-RESPONSE``; V2 dropped the ``X-`` prefix
+# (HTTP RFC 6648) and uses ``PAYMENT-SIGNATURE`` / ``PAYMENT-RESPONSE``.
 
 # Default preferred network — CAIP-2 chain ID for Base (8453). The x402 v2
 # spec identifies networks with CAIP-2 identifiers and the SDK registers
@@ -46,6 +55,23 @@ V1_NETWORKS_SET = frozenset(V1_NETWORKS)
 
 AnyPaymentRequired = PaymentRequired | PaymentRequiredV1
 AnyPaymentRequirements = PaymentRequirements | PaymentRequirementsV1
+
+
+def payment_headers(
+    payment_required: AnyPaymentRequired,
+) -> tuple[str, str]:
+    """Return ``(request_header, response_header)`` for the wire version.
+
+    V1 gates expect ``X-PAYMENT`` on the retry and emit
+    ``X-PAYMENT-RESPONSE`` on the settled 200. V2 gates expect
+    ``PAYMENT-SIGNATURE`` and emit ``PAYMENT-RESPONSE`` (the ``X-``
+    prefix was dropped per RFC 6648). Sending the V1 header to a V2
+    facilitator is what caused PayAI to ignore signed retries with a
+    fresh 402 in Phase A.
+    """
+    if isinstance(payment_required, PaymentRequiredV1):
+        return X_PAYMENT_HEADER, X_PAYMENT_RESPONSE_HEADER
+    return PAYMENT_SIGNATURE_HEADER, PAYMENT_RESPONSE_HEADER
 
 
 def _atomic_amount(req: AnyPaymentRequirements) -> Decimal:
