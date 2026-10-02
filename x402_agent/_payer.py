@@ -17,6 +17,8 @@ to serialise (JSON string, tool-call response object, etc.). Neither raises
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 from decimal import Decimal
 from typing import Any
@@ -139,12 +141,24 @@ class X402Payer:
 
         The SDK's ``parse_payment_required`` auto-detects the schema
         version from the ``x402Version`` field and returns the matching
-        pydantic model. Both V1 and V2 are settled through the same
-        client, so we accept either.
+        pydantic model. V2 PAYMENT-REQUIRED headers take precedence over
+        the body. A malformed header is rejected without body fallback.
+        Both V1 and V2 body challenges remain supported.
         """
+        # V2 challenges can carry the authoritative JSON in the header while
+        # the response body is empty or contains an unrelated error object.
+        # Never fall back to the body when a present header is malformed.
         try:
-            return parse_payment_required(response.content)
-        except (ValueError, TypeError, ValidationError, json.JSONDecodeError):
+            header = response.headers.get("PAYMENT-REQUIRED")
+            if header is not None:
+                if not header or len(header) > 65536:
+                    return None
+                content = base64.b64decode(header, validate=True)
+            else:
+                content = response.content
+            return parse_payment_required(content)
+        except (ValueError, TypeError, ValidationError, json.JSONDecodeError,
+                binascii.Error, UnicodeError):
             return None
 
     def _budget_gate(
